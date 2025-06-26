@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>High-Frequency Latency Benchmark</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+            background-color: #121212;
+            color: #e0e0e0;
+            margin: 0 auto;
+            padding: 2rem;
+            max-width: 800px;
+            line-height: 1.6;
+        }
+        h1, h2 {
+            border-bottom: 1px solid #444;
+            padding-bottom: 10px;
+            font-weight: 500;
+        }
+        .container {
+            background-color: #1e1e1e;
+            padding: 1.5rem 2rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            min-width: 120px;
+            transition: background-color 0.2s;
+        }
+        .start-button { background-color: #3d8f3d; color: white; }
+        .start-button:hover { background-color: #4caf50; }
+        .stop-button { background-color: #d32f2f; color: white; }
+        .stop-button:hover { background-color: #f44336; }
+        
+        .slider-container {
+            margin-top: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .slider-container label { color: #aaa; flex-shrink: 0; }
+        #delayValue {
+            font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+            font-size: 1rem;
+            color: #f0e68c;
+            min-width: 55px;
+            text-align: right;
+        }
+        input[type=range] {
+            -webkit-appearance: none; appearance: none; width: 100%; height: 8px;
+            background: #444; border-radius: 5px; outline: none;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none; width: 20px; height: 20px;
+            background: #f0e68c; cursor: pointer; border-radius: 50%; margin-top: -6px;
+        }
+        input[type=range]::-moz-range-thumb {
+            width: 20px; height: 20px; background: #f0e68c;
+            cursor: pointer; border-radius: 50%; border: none;
+        }
+
+        pre#log {
+            background-color: #000; padding: 15px; border-radius: 4px;
+            white-space: pre-wrap; word-wrap: break-word; font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+            font-size: 0.9rem; max-height: 250px; overflow-y: auto;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 1rem;
+        }
+        .stat-item {
+            background-color: #2a2a2a; padding: 15px;
+            border-radius: 6px; text-align: center;
+        }
+        .stat-label { display: block; font-size: 0.9rem; color: #aaa; margin-bottom: 5px; }
+        .stat-value { display: block; font-size: 1.5rem; font-weight: 500; color: #f0e68c; }
+        .info { color: #87cefa; }
+        .success { color: #98fb98; }
+        .error { color: #ff6347; }
+        .data { color: #f0e68c; }
+    </style>
+</head>
+<body>
+
+    <h1>High-Frequency Latency Benchmark</h1>
+
+    <div class="container">
+        <p>An efficient benchmark that measures connection latency to 1.1.1.1. Use the slider to adjust the request interval in real-time.</p>
+        <button id="toggleButton" class="start-button">Start Test</button>
+        <div class="slider-container">
+            <label for="delaySlider">Interval:</label>
+            <input type="range" id="delaySlider" min="0" max="6" value="2" step="1">
+            <span id="delayValue">1.0 s</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Live Statistics</h2>
+        <div class="stats-grid">
+            <div class="stat-item"><span class="stat-label">Average</span><span class="stat-value" id="avgStat">-.-- ms</span></div>
+            <div class="stat-item"><span class="stat-label">Jitter</span><span class="stat-value" id="jitterStat">-.-- ms</span></div>
+            <div class="stat-item"><span class="stat-label">Min / Max</span><span class="stat-value" id="minMaxStat">-.-- / -.--</span></div>
+            <div class="stat-item"><span class="stat-label">Tests</span><span class="stat-value" id="countStat">0</span></div>
+            <div class="stat-item"><span class="stat-label">Errors</span><span class="stat-value" id="errorStat">0</span></div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Live Log (Last 100 Entries)</h2>
+        <pre id="log"></pre>
+    </div>
+
+    <script>
+        const toggleButton = document.getElementById('toggleButton');
+        const delaySlider = document.getElementById('delaySlider');
+        const delayValueEl = document.getElementById('delayValue');
+        const logElement = document.getElementById('log');
+        
+        const avgStatEl = document.getElementById('avgStat');
+        const jitterStatEl = document.getElementById('jitterStat');
+        const minMaxStatEl = document.getElementById('minMaxStat');
+        const countStatEl = document.getElementById('countStat');
+        const errorStatEl = document.getElementById('errorStat');
+        
+        const DELAY_POINTS_MS = [300, 500, 1000, 2000, 3000, 4000, 5000];
+        const TIMEOUT_THRESHOLD_MS = 4500;
+        let currentDelayMs = DELAY_POINTS_MS[delaySlider.value];
+
+        let isTestRunning = false;
+        let testTimeoutId = null;
+        const latencies = [];
+        let testCount = 0;
+        let errorCount = 0;
+        let minLatency = Infinity;
+        let maxLatency = -Infinity;
+        const MAX_LOG_ENTRIES = 100;
+
+        const log = (message, className) => {
+            if (logElement.childElementCount >= MAX_LOG_ENTRIES) {
+                logElement.removeChild(logElement.firstChild);
+            }
+            const now = new Date();
+            const timestamp = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+            const entry = document.createElement('span');
+            entry.className = className;
+            entry.textContent = `[${timestamp}] ${message}\n`;
+            logElement.appendChild(entry);
+            logElement.scrollTop = logElement.scrollHeight;
+        };
+
+        const updateStatistics = (newLatency) => {
+            latencies.push(newLatency);
+            minLatency = Math.min(minLatency, newLatency);
+            maxLatency = Math.max(maxLatency, newLatency);
+            
+            const sum = latencies.reduce((a, b) => a + b, 0);
+            const avg = sum / latencies.length;
+            const sumOfSquares = latencies.map(x => Math.pow(x - avg, 2)).reduce((a, b) => a + b, 0);
+            const jitter = Math.sqrt(sumOfSquares / latencies.length);
+
+            avgStatEl.textContent = `${avg.toFixed(2)} ms`;
+            jitterStatEl.textContent = `${jitter.toFixed(2)} ms`;
+            minMaxStatEl.textContent = `${minLatency.toFixed(2)} / ${maxLatency.toFixed(2)}`;
+        };
+        
+        const resetStatistics = () => {
+            latencies.length = 0;
+            testCount = 0;
+            errorCount = 0;
+            minLatency = Infinity;
+            maxLatency = -Infinity;
+
+            avgStatEl.textContent = '-.-- ms';
+            jitterStatEl.textContent = '-.-- ms';
+            minMaxStatEl.textContent = '-.-- / -.--';
+            countStatEl.textContent = '0';
+            errorStatEl.textContent = '0';
+            logElement.innerHTML = '';
+        };
+
+        const measureHttpLatency = () => {
+            if (!isTestRunning) return;
+
+            const img = new Image();
+            const startTime = performance.now();
+            
+            const handleFinish = () => {
+                const latency = performance.now() - startTime;
+                
+                // If latency exceeds threshold, count as an error and do NOT add to stats.
+                if (latency >= TIMEOUT_THRESHOLD_MS) {
+                    errorCount++;
+                    errorStatEl.textContent = errorCount;
+                    log(`Error: Connection timed out (> ${TIMEOUT_THRESHOLD_MS}ms)`, 'error');
+                } else {
+                    // Otherwise, treat as a valid test.
+                    testCount++;
+                    countStatEl.textContent = testCount;
+                    log(`Latency: ${latency.toFixed(2)} ms`, 'data');
+                    updateStatistics(latency);
+                }
+
+                if (isTestRunning) {
+                    testTimeoutId = setTimeout(measureHttpLatency, currentDelayMs);
+                }
+                img.onload = null;
+                img.onerror = null;
+            };
+
+            img.onload = handleFinish;
+            img.onerror = handleFinish;
+            img.src = `https://1.1.1.1/cdn-cgi/trace?_=${performance.now()}`;
+        };
+
+        const startTest = () => {
+            isTestRunning = true;
+            toggleButton.textContent = "Stop Test";
+            toggleButton.className = "stop-button";
+            resetStatistics();
+            log('Starting benchmark...', 'success');
+            measureHttpLatency();
+        };
+
+        const stopTest = () => {
+            isTestRunning = false;
+            clearTimeout(testTimeoutId);
+            toggleButton.textContent = "Start Test";
+            toggleButton.className = "start-button";
+            log('Benchmark stopped.', 'error');
+        };
+
+        toggleButton.addEventListener('click', () => {
+            isTestRunning ? stopTest() : startTest();
+        });
+
+        delaySlider.addEventListener('input', () => {
+            currentDelayMs = DELAY_POINTS_MS[delaySlider.value];
+            delayValueEl.textContent = `${(currentDelayMs / 1000).toFixed(1)} s`;
+        });
+    </script>
+</body>
+</html>
